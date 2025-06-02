@@ -1,0 +1,8 @@
+openai~=0.28.1
+python-dotenv
+psycopg[binary]
+python-telegram-bot~=20.7
+pypdf2
+faiss-cpu
+httpx>=0.20.0
+requests 
