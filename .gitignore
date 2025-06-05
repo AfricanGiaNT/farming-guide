@@ -145,10 +145,6 @@ Thumbs.db
 logs/
 temp/
 
-# Knowledge Base Index Files
-faiss_index.idx
-text_chunks.pkl
-
 # IDE / Editor specific
 .vscode/
 .idea/
