@@ -74,6 +74,10 @@ async def handle_message(update, context):
 
 def main():
     """Main function to run the bot"""
+    # --- DEBUGGING LINE ---
+    logger.info(f"--- [DEBUG] DATABASE_URL from env is: {os.getenv('DATABASE_URL')} ---")
+    # --- END DEBUGGING LINE ---
+
     # Initialize database
     try:
         init_db()
