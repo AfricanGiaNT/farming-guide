@@ -1,11 +1,12 @@
 import logging
 import os
+import argparse
 from dotenv import load_dotenv
 
 load_dotenv()
 
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
-from ai_agent import process_query
+from ai_agent import AIAgent
 from database import init_db
 
 # Configure logging
@@ -14,6 +15,8 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# --- Telegram Bot Handlers ---
 
 async def start(update, context):
     """Handle the /start command"""
@@ -55,14 +58,17 @@ async def handle_message(update, context):
     """Handle regular text messages"""
     query = update.message.text
     user_name = update.message.from_user.first_name or "Farmer"
+    chat_id = str(update.message.chat_id)
     
-    logger.info(f"Received query from {user_name}: {query}")
+    logger.info(f"Received query from {user_name} (chat_id: {chat_id}): {query}")
     
     # Send typing indicator
     await update.message.chat.send_action("typing")
     
     try:
-        response = process_query(query)
+        # Get the agent from the application context
+        agent = context.bot_data["agent"]
+        response = agent.ask(query, chat_id)
         logger.info(f"Sending response to {user_name}")
         await update.message.reply_text(response)
     except Exception as e:
@@ -74,6 +80,13 @@ async def handle_message(update, context):
 
 def main():
     """Main function to run the bot"""
+    parser = argparse.ArgumentParser(description="Run the Telegram Agricultural Advisor Bot.")
+    parser.add_argument("--mode", choices=["polling", "webhook"], default="polling",
+                        help="Mode to run the bot in (polling or webhook).")
+    parser.add_argument("--webhook-url", type=str,
+                        help="The webhook URL to use when in webhook mode (e.g., from ngrok).")
+    args = parser.parse_args()
+
     # --- DEBUGGING LINE ---
     logger.info(f"--- [DEBUG] DATABASE_URL from env is: {os.getenv('DATABASE_URL')} ---")
     # --- END DEBUGGING LINE ---
@@ -95,6 +108,10 @@ def main():
     # Create application
     app = Application.builder().token(bot_token).build()
     
+    # Create and store the AIAgent instance
+    agent = AIAgent()
+    app.bot_data["agent"] = agent
+    
     # Add handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
@@ -102,8 +119,22 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     # Start the bot
-    logger.info("Starting bot...")
-    app.run_polling(allowed_updates=["message"])
+    if args.mode == "polling":
+        logger.info("Starting bot in polling mode...")
+        app.run_polling(allowed_updates=["message"])
+    elif args.mode == "webhook":
+        if not args.webhook_url:
+            logger.error("Webhook mode requires a --webhook-url.")
+            return
+        
+        port = int(os.environ.get("PORT", 8000))
+        logger.info(f"Starting bot in webhook mode on port {port}...")
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path=bot_token.split(':')[-1], # Use a secret part of the token as the path
+            webhook_url=f"{args.webhook_url}/{bot_token.split(':')[-1]}"
+        )
 
 if __name__ == "__main__":
     main() 
