@@ -99,12 +99,12 @@ def test_openai():
     """Test OpenAI API connection"""
     print("\n🔍 Testing OpenAI API...")
     try:
-        import openai
-        from ai_agent import generate_response
+        from ai_agent import AIAgent
         
+        agent = AIAgent()
         # Test with a simple prompt
-        test_prompt = "Say 'Hello, I am working!' if you can read this."
-        response = generate_response(test_prompt, temperature=0)
+        test_messages = [{"role": "user", "content": "Say 'Hello, I am working!' if you can read this."}]
+        response = agent.generate_response(test_messages, temperature=0)
         
         if response and "working" in response.lower():
             print("✅ OpenAI API is working")
@@ -112,6 +112,7 @@ def test_openai():
             return True
         else:
             print("❌ OpenAI API test failed")
+            print(f"   Response: {response}")
             return False
             
     except Exception as e:
@@ -153,8 +154,11 @@ def test_query_processing():
     """Test the complete query processing pipeline"""
     print("\n🔍 Testing Query Processing Pipeline...")
     try:
-        from ai_agent import process_query
+        from ai_agent import AIAgent
         
+        agent = AIAgent()
+        test_chat_id = "test_chat_123"
+
         test_queries = [
             "What crops grow best in Lilongwe?",
             "When should I plant maize?",
@@ -163,7 +167,7 @@ def test_query_processing():
         
         for query in test_queries:
             print(f"\n   Testing: '{query}'")
-            response = process_query(query)
+            response = agent.ask(query, test_chat_id)
             
             if response and len(response) > 10:
                 print(f"   ✅ Got response (length: {len(response)} chars)")
