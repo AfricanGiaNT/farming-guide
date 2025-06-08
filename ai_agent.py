@@ -85,26 +85,16 @@ def preprocess_query(query: str) -> str:
         query = f"{query} (for Lilongwe, Malawi context)"
     return query
 
-def generate_response(prompt: str, temperature: float = 0.7) -> str:
+def generate_response(prompt: str, temperature: float = 0.2) -> str:
     """Generate response using OpenAI GPT"""
     try:
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
-                {
-                    "role": "system", 
-                    "content": (
-                        "You are an expert agricultural advisor specializing in farming practices "
-                        "in Lilongwe, Malawi. Provide practical, actionable advice considering the "
-                        "local climate, soil conditions, and common farming practices. Use simple "
-                        "language and include specific timing, techniques, and local considerations. "
-                        "Format responses with bullet points and emojis where appropriate. "
-                        "Base your answer primarily on the provided context from documents. If the context is insufficient, say so."
-                    )
-                },
+                {"role": "system", "content": "You are a helpful agricultural advisor."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=700, # Increased slightly for potentially more context
+            max_tokens=1000,
             temperature=temperature,
             top_p=0.9,
             frequency_penalty=0.3,
@@ -119,93 +109,103 @@ def generate_response(prompt: str, temperature: float = 0.7) -> str:
         return "⚠️ AI service temporarily unavailable. Please try again later."
     except Exception as e:
         logger.error(f"Error generating response: {e}")
-        return None # Changed from error string to None to allow fallback logic
+        return None
 
-def format_response_with_source(response: str, source: str) -> str:
-    source_emoji = {
-        "pdf_knowledge": "📚",
-        "online_search": "🌐", 
-        "ai_fallback": "🤖"
-    }
-    emoji = source_emoji.get(source, "ℹ️")
-    if "Source:" in response:
-        return response
-    return f"{response}\n\n{emoji} Source: {source.replace('_', ' ').title()}"
+def parse_answer_from_response(raw_response: str) -> str:
+    """Extracts the content from between <answer> tags."""
+    try:
+        if "<answer>" in raw_response and "</answer>" in raw_response:
+            start_tag = "<answer>"
+            end_tag = "</answer>"
+            start_index = raw_response.find(start_tag) + len(start_tag)
+            end_index = raw_response.find(end_tag, start_index)
+            # Remove the initial "Here's my advice..." part if it exists for cleaner output
+            answer_content = raw_response[start_index:end_index].strip()
+            if answer_content.lower().startswith("here's my advice for farming in lilongwe, malawi:"):
+                answer_content = answer_content[len("here's my advice for farming in lilongwe, malawi:"):].strip()
+            return answer_content
+        else:
+            # Fallback if tags are missing, return the whole response
+            return raw_response
+    except Exception as e:
+        logger.error(f"Failed to parse answer from response: {e}")
+        return raw_response # Return raw response on parsing error
 
 def process_query(query: str) -> str:
     logger.info(f"Processing query: {query}")
     processed_query = preprocess_query(query)
     final_response = None
-    source_used = "ai_fallback" # Default source
+    source_used = "ai_fallback"
 
-    # Step 1: Retrieve from PDF Knowledge Base
-    logger.info(f"Attempting to retrieve context from PDF knowledge base for: {processed_query}")
+    # Step 1: Retrieve context from PDFs and online search
     pdf_context_chunks = retrieve_from_pdf_knowledge(processed_query)
-    
-    context_for_llm = ""
-    if pdf_context_chunks:
-        context_for_llm = "\n\nContext from documents:\n" + "\n---\n".join(pdf_context_chunks)
-        logger.info(f"Retrieved {len(pdf_context_chunks)} chunks from PDF knowledge.")
-        source_used = "pdf_knowledge"
-    else:
-        logger.info("No relevant context found in PDF knowledge base.")
-
-    # Step 2: (Optional) Online Search if PDF context is weak or as supplement
-    # For now, let's always try online search and append, or use if PDF context is empty
     online_search_results = search_online(processed_query)
+
+    # Step 2: Construct the full context string
+    pdf_context_str = ""
+    if pdf_context_chunks:
+        pdf_context_str = "PDF Document Context:\n" + "\n---\n".join(pdf_context_chunks)
+        source_used = "pdf_knowledge"
+    
+    online_context_str = ""
     if online_search_results and online_search_results != "No information found":
-        context_for_llm += "\n\nContext from online search:\n" + online_search_results
-        logger.info("Added context from online search.")
-        if source_used == "pdf_knowledge":
-            source_used = "pdf_knowledge_and_online"
-        else:
-            source_used = "online_search"
-    else:
-        logger.info("No additional information found from online search or search was skipped.")
+        online_context_str = "Online Search Context:\n" + online_search_results
+        source_used = "online_search" if source_used == "ai_fallback" else "pdf_and_online"
 
-    # Step 3: Generate AI response based on available context
-    if context_for_llm:
-        prompt = f"User question: '{query}'\n{context_for_llm}\n\nBased on the provided context, please answer the user's question. If the context is insufficient to answer the question fully, state that and provide any general advice you can."
-        logger.info("Generating AI response using retrieved context.")
-        ai_response = generate_response(prompt, temperature=0.5)
-        if ai_response:
-            final_response = ai_response
-            # No save_to_db for RAG, as answers are dynamic. Logging is still useful.
-            log_query(query, source_used)
-        else:
-            logger.warning("AI generation failed even with context.")
-    
-    # Step 4: Fallback to pure AI generation if no context and no response yet
+    full_context = f"{pdf_context_str}\n\n{online_context_str}".strip()
+    if not full_context:
+        full_context = "No context information was available."
+
+    # Step 3: Populate the new prompt template
+    prompt_template = """You are an expert agricultural advisor specializing in farming practices in Lilongwe, Malawi. Your task is to provide practical, actionable advice to farmers based on their questions, considering the local climate, soil conditions, and common farming practices in the area.
+
+First, carefully read and analyze the following context information:
+
+<context>
+{{CONTEXT}}
+</context>
+
+Use this context as the primary source for your advice. Pay close attention to specific details about Lilongwe's climate, soil conditions, and local farming practices mentioned in the context.
+
+When formulating your response:
+1. Use simple, easy-to-understand language suitable for local farmers.
+2. Include specific timing for agricultural activities when relevant.
+3. Describe techniques in a step-by-step manner when appropriate.
+4. Consider and mention local considerations that may affect farming practices.
+5. Format your response using bullet points for clarity.
+6. Use relevant emojis at the beginning of each bullet point to make the advice more engaging and easier to remember.
+
+If the context does not provide sufficient information to answer the question confidently, state that the information is limited and provide a general response based on common agricultural practices, clearly indicating that it's not specific to Lilongwe.
+
+Here is the farmer's question:
+
+<question>
+{{QUESTION}}
+</question>
+
+Please provide your expert advice in response to this question, following the guidelines above. Begin your response with "Here's my advice for farming in Lilongwe, Malawi:" and enclose your entire answer within <answer> tags."""
+
+    final_prompt = prompt_template.replace("{{CONTEXT}}", full_context).replace("{{QUESTION}}", query)
+
+    # Step 4: Generate and parse the response
+    logger.info("Generating AI response using new prompt template.")
+    raw_response = generate_response(final_prompt, temperature=0.2)
+
+    if raw_response:
+        final_response = parse_answer_from_response(raw_response)
+        log_query(query, source_used)
+    else:
+        logger.error("AI generation failed.")
+
+    # Step 5: Final fallback message
     if not final_response:
-        logger.info("No context available or previous AI generation failed. Falling back to pure AI generation.")
-        fallback_prompt = f"""Provide agricultural advice for this question: '{query}'
-    
-        Focus on:
-        - Practical advice for small-scale farmers in Lilongwe, Malawi
-        - Consider local climate (subtropical highland, rainy season Nov-Apr)
-        - Common crops: maize, tobacco, groundnuts, beans, vegetables
-        - Local challenges: soil fertility, water management, pest control
-        
-        If you're not certain about specific details for Lilongwe, provide general best practices
-        that would apply to similar climates and clearly indicate what farmers should verify locally."""
-        ai_response = generate_response(fallback_prompt, temperature=0.6)
-        if ai_response:
-            final_response = ai_response + "\n\n💡 Tip: For the most specific advice, also consult local agricultural extension officers. This answer is based on general knowledge."
-            source_used = "ai_fallback"
-            log_query(query, source_used)
-        else:
-            logger.error("Pure AI fallback generation also failed.")
-
-    if final_response:
-        return format_response_with_source(final_response, source_used)
-    else:
-        # Absolute fallback message
         return (
-            "�� I apologize, but I'm having trouble processing your request at the moment. "
+            "🚫 I apologize, but I'm having trouble processing your request at the moment. "
             "Please try rephrasing your question or contact local agricultural extension services "
-            "for immediate assistance.\n\n"
-            "📞 Lilongwe ADD: +265 1 754 244 (example number)"
+            "for immediate assistance."
         )
+
+    return final_response
 
 # Reminder: Ensure .env has OPENAI_API_KEY
 # If you decide to use the old search_db or save_to_db, uncomment their imports and usage. 
